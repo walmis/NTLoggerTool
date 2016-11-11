@@ -43,7 +43,7 @@ from PyQt5.QtWidgets import (QMainWindow, QApplication, QCheckBox, QColorDialog,
                              QStyleFactory, QStyle, QListWidgetItem, QTreeWidgetItem, QComboBox)
 from PyQt5.QtGui import QPalette, QColor, QFont, QFontInfo, QFontMetrics, QFontDatabase
 from PyQt5.QtSerialPort import QSerialPortInfo, QSerialPort
-from PyQt5.QtNetwork import (QTcpSocket, QUdpSocket,
+from PyQt5.QtNetwork import (QTcpSocket, QUdpSocket, QHostAddress,
                              QNetworkConfigurationManager, QNetworkConfiguration, QNetworkSession, QNetworkInterface)
 
 #pyuic5 input.ui -o output.py
@@ -119,12 +119,11 @@ class cRingBuffer():
 class cRingBuffer():
     def __init__(self, size):
 
-        print(size)
         self.writepos = 0
         self.readpos = 0
         self.SIZEMASK = size-1
         self.buf = bytearray(size)
-        print(len(self.buf))
+        print("Create ring buffer", len(self.buf))
         #print(self.buf)
 
     def putc(self, c):
@@ -136,14 +135,16 @@ class cRingBuffer():
         return 0
 
     def putbuf(self, buf):
-        for i in range(len(buf)): self.putc( buf[i] )
+        for c in buf: self.putc( c )
 
     def getc(self):
         if self.writepos != self.readpos: #fifo not empty
             c = self.buf[self.readpos]
             self.readpos = ( self.readpos + 1 ) & self.SIZEMASK
-            return 1
-        return 0
+            return c
+            
+        raise Exception("getc: fifo is empty")    
+
 
     def available(self):
         d = self.writepos - self.readpos
@@ -1806,28 +1807,22 @@ class cNTLogFileReader:
 
 
 class cSerialUARTStream():
-    def __init__(self,_port):
+    def __init__(self,_portname):
         #super().__init__()
+        
+        self.port = QSerialPort()
 
-        self.port = _port
         self.port.setBaudRate(2000000)
         self.port.setDataBits(8)
         self.port.setParity(QSerialPort.NoParity)
         self.port.setStopBits(1)
         self.port.setFlowControl(QSerialPort.NoFlowControl)
         self.port.setReadBufferSize( 256*1024 )
-
-    def openPort(self,portname):
-        self.serialIsSocket = False
-        self.port.setPortName(portname)
+        self.port.setPortName(_portname)
         self.port.open(QIODevice.ReadWrite) #this unfortunatley b?locks the GUI!!!
-
+        
     def close(self):
-        if self.serialIsSocket:
-            self.udp.close()
-            self.socket.close()
-        else:
-            self.port.close()
+        self.port.close()
 
     def isValid(self):
         if self.port.error(): return False
@@ -1840,78 +1835,82 @@ class cSerialUARTStream():
     def readOneByte(self):
         return self.port.read(1)
     
-class cSerialNetworkStream():
+class cSerialUDPStream():
     def __init__(self,_port):
         #super().__init__()
 
-        self.port = _port
-        self.port.setBaudRate(2000000)
-        self.port.setDataBits(8)
-        self.port.setParity(QSerialPort.NoParity)
-        self.port.setStopBits(1)
-        self.port.setFlowControl(QSerialPort.NoFlowControl)
-        self.port.setReadBufferSize( 256*1024 )
+        self.fifo = cRingBuffer(128*1024)
+        
+        self.udp = QUdpSocket()
+        self.udp.bind(QHostAddress("0.0.0.0"), 7777)
+        self.udp.readyRead.connect(self._onUdpReadyRead)
+        
+        self.tcp = QTcpSocket()
+        self.tcp.connected.connect(self._onTcpConnected)
+        print("cSerialUDPStream")
+        
+    def _onTcpConnected(self):
+        print("Connected")
+        
+        
+    def _onUdpReadyRead(self):
+        while self.udp.hasPendingDatagrams():
+            data, host, port = self.udp.readDatagram(8192)
+            #print(len(data))
+            #print(self.fifo.free())
+            if self.fifo.free() < 1400:
+                print("fifo overflow")
+            self.fifo.putbuf(data)       
 
     def openPort(self,portname):
-        self.serialIsSocket = False
-        self.port.setPortName(portname)
-        self.port.open(QIODevice.ReadWrite) #this unfortunatley b?locks the GUI!!!
+        print("open port")
+        self.tcp.connectToHost("172.16.0.1", 5050)
 
     def close(self):
-        if self.serialIsSocket:
-            self.udp.close()
-            self.socket.close()
-        else:
-            self.port.close()
+        print("disconnect")
+        self.tcp.disconnectFromHost()
 
     def isValid(self):
-        if self.port.error(): return False
-        
         return True
 
     def bytesAvailable(self):
-        return self.port.bytesAvailable()
+        return self.fifo.available()
 
     def readOneByte(self):
-        return self.port.read(1)
+        c = chr(self.fifo.getc())
+        #print("c", c)
+        return bytes([ord(c)])
 
 class cSerialStream():
 
     def __init__(self,_port):
         #super().__init__()
 
-        self.port = _port
-        self.port.setBaudRate(2000000)
-        self.port.setDataBits(8)
-        self.port.setParity(QSerialPort.NoParity)
-        self.port.setStopBits(1)
-        self.port.setFlowControl(QSerialPort.NoFlowControl)
-        self.port.setReadBufferSize( 256*1024 )
+        self.port = None
 
-        self.serialIsSocket = False #assume the default
-
-    def openPort(self,portname):
-        self.serialIsSocket = False
-        self.port.setPortName(portname)
-        self.port.open(QIODevice.ReadWrite) #this unfortunatley b?locks the GUI!!!
+    def openPort(self, portname):
+        print("open " + portname)
+        if "ENSYS" in portname:
+            self.port = cSerialUDPStream(portname)
+        else:
+            self.port = cSerialUARTStream(portname)
+            
+        self.port.openPort(portname)
 
     def close(self):
-        if self.serialIsSocket:
-            self.udp.close()
-            self.socket.close()
-        else:
-            self.port.close()
+        self.port.close()
+        
 
     def isValid(self):
-        if self.port.error(): return False
+        if not self.port: return False
         
-        return True
+        return self.port.isValid()        
 
     def bytesAvailable(self):
         return self.port.bytesAvailable()
 
     def readOneByte(self):
-        return self.port.read(1)
+        return self.port.readOneByte()
 
 
 class cNTSerialReaderThread(QThread):
@@ -1979,6 +1978,7 @@ class cNTSerialReaderThread(QThread):
             while self.serial.bytesAvailable()>512: #digest all data accumulated since the last call
                 b = self.readByte()
                 c = int(b[0])
+                #print(c)
                 if c<128: continue #this can't be a cmdid
                 parser.parse(c)
                 parser.analyzeAndAppend(c, 0) #stxerror = 0
@@ -2533,10 +2533,8 @@ class cMain(QMainWindow,wMainWindow):
         self.networkManager = QNetworkConfigurationManager()
         self.wRecordComPort = cSerialPortComboBox(self.networkManager, self.centralwidget, _winScale)
         self.topLayout.addWidget(self.wRecordComPort)
-        self.serialPort = QSerialPort()
-        self.tcpSocket = QTcpSocket()
-        self.udpSocket = QUdpSocket()
-        self.serialStream = cSerialStream(self.serialPort, self.tcpSocket, self.udpSocket)
+
+        self.serialStream = cSerialStream(None)
         self.serialReaderThread = cNTSerialReaderThread(self.serialStream)
         self.serialReaderThread.finished.connect(self.serialReaderThreadDone)
         self.serialReaderThread.newSerialDataAvailable.connect(self.serialReaderThreadNewDataAvailable)
