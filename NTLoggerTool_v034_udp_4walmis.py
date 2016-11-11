@@ -1877,9 +1877,7 @@ class cSerialUDPStream():
         return self.fifo.available()
 
     def readOneByte(self):
-        c = chr(self.fifo.getc())
-        #print("c", c)
-        return bytes([ord(c)])
+        return bytes([self.fifo.getc()])
 
 class cSerialStream():
 
