@@ -1839,7 +1839,7 @@ class cSerialUDPStream():
     def __init__(self,_port):
         #super().__init__()
 
-        self.fifo = cRingBuffer(128*1024)
+        self.fifo = cRingBuffer(1024*1024)
         
         self.udp = QUdpSocket()
         self.udp.bind(QHostAddress("0.0.0.0"), 7777)
@@ -1849,18 +1849,23 @@ class cSerialUDPStream():
         self.tcp.connected.connect(self._onTcpConnected)
         print("cSerialUDPStream")
         
+        
     def _onTcpConnected(self):
         print("Connected")
         
         
     def _onUdpReadyRead(self):
+        c = 0
         while self.udp.hasPendingDatagrams():
             data, host, port = self.udp.readDatagram(8192)
             #print(len(data))
             #print(self.fifo.free())
             if self.fifo.free() < 1400:
                 print("fifo overflow")
-            self.fifo.putbuf(data)       
+            self.fifo.putbuf(data)    
+            c+=1
+        if c > 1:    
+            print("read dgrams", c)
 
     def openPort(self,portname):
         print("open port")
@@ -1878,6 +1883,66 @@ class cSerialUDPStream():
 
     def readOneByte(self):
         return bytes([self.fifo.getc()])
+        
+import socket        
+import time
+class cSerialTCPStream(QThread):
+    def __init__(self,_port):
+        super().__init__()
+        QThread.__init__(self)
+
+        self.fifo = cRingBuffer(64*1024)
+        
+        print("cSerialTCPStream")
+        self.exitflag = False
+        
+                
+    def run(self):
+        print("exec")
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("172.16.0.1", 7000))
+        
+        
+        t = time.time()
+        d = 0
+        while not self.exitflag:
+
+            
+            rcv = s.recv(2048)
+            d += len(rcv)
+            if time.time() - t > 1:
+                print(d)
+                d = 0
+                t= time.time()
+                
+            if self.fifo.free() < len(rcv):
+                print("fifo overflow")                
+            self.fifo.putbuf(rcv)
+
+        s.close()
+        self.exitflag = False
+        
+    def _onTcpConnected(self):
+        print("Connected")
+
+    def openPort(self,portname):
+        print("open port")
+        
+        self.start(QThread.HighPriority)
+
+    def close(self):
+        print("disconnect")
+        self.exitflag = True
+
+    def isValid(self):
+        return True
+
+    def bytesAvailable(self):
+        #print(self.tcp.bytesAvailable())
+        return self.fifo.available()
+
+    def readOneByte(self):
+        return bytes([self.fifo.getc()])
 
 class cSerialStream():
 
@@ -1889,7 +1954,7 @@ class cSerialStream():
     def openPort(self, portname):
         print("open " + portname)
         if "ENSYS" in portname:
-            self.port = cSerialUDPStream(portname)
+            self.port = cSerialTCPStream(portname)
         else:
             self.port = cSerialUARTStream(portname)
             
